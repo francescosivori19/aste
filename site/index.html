@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="it">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Aste Immobili</title>
+  <meta name="theme-color" content="#1d4ed8">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="Aste">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+  <link rel="icon" href="icons/icon-192.png">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet.markercluster/1.5.3/MarkerCluster.min.css">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet.markercluster/1.5.3/MarkerCluster.Default.min.css">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="top">
+    <div class="title">Aste <span id="count" class="muted"></span></div>
+    <div id="updated" class="muted small"></div>
+  </header>
+
+  <main>
+    <section id="v-mappa" class="view active">
+      <div id="map"></div>
+      <div id="drawbar" class="drawbar hidden">
+        <div class="small" id="drawhint">Tocca la mappa per aggiungere i vertici dell'area</div>
+        <div class="row">
+          <button id="draw-undo" class="btn">Annulla punto</button>
+          <button id="draw-cancel" class="btn">Esci</button>
+          <button id="draw-done" class="btn primary">Fine</button>
+        </div>
+      </div>
+      <div class="mapbtns">
+        <button id="btn-draw" class="btn primary">✏️ Disegna area</button>
+        <button id="btn-clear-area" class="btn hidden">✕ Togli area</button>
+        <button id="btn-locate" class="btn" title="La mia posizione">◎</button>
+      </div>
+    </section>
+
+    <section id="v-elenco" class="view">
+      <div class="listhead">
+        <span id="listcount" class="muted"></span>
+        <select id="sort">
+          <option value="data">Data asta ↑</option>
+          <option value="prezzo">Prezzo ↑</option>
+          <option value="prezzo-desc">Prezzo ↓</option>
+          <option value="nuove">Ultime pubblicate</option>
+          <option value="eurmq">€/m² ↑</option>
+        </select>
+      </div>
+      <ul id="list" class="list"></ul>
+      <button id="more" class="btn wide hidden">Mostra altre</button>
+    </section>
+
+    <section id="v-filtri" class="view">
+      <form id="filters" class="filters" onsubmit="return false">
+        <h3>Tipologia</h3>
+        <div class="chips" id="tipi"></div>
+
+        <h3>Zona</h3>
+        <div class="seg">
+          <label><input type="radio" name="zona" value="tutta" checked> Tutta Italia</label>
+          <label><input type="radio" name="zona" value="area"> Area disegnata</label>
+          <label><input type="radio" name="zona" value="cap"> CAP / Comuni</label>
+        </div>
+        <div id="zona-area" class="hint hidden">
+          <span id="area-status"></span>
+          <button type="button" id="go-draw" class="btn">Disegna sulla mappa</button>
+        </div>
+        <div id="zona-cap" class="hidden">
+          <textarea id="caps" rows="2" placeholder="Es. 16121, 16122, Rapallo, Chiavari"></textarea>
+          <div class="small muted">Separati da virgola. Un CAP a 3 cifre (es. 161) include tutti quelli che iniziano così.</div>
+        </div>
+
+        <h3>Prezzo base (€)</h3>
+        <div class="row2">
+          <input id="pmin" type="number" inputmode="numeric" placeholder="min">
+          <input id="pmax" type="number" inputmode="numeric" placeholder="max">
+        </div>
+
+        <h3>Data asta</h3>
+        <div class="row2">
+          <input id="dmin" type="date">
+          <input id="dmax" type="date">
+        </div>
+
+        <h3>Altro</h3>
+        <label class="check"><input type="checkbox" id="libero"> Solo immobili dichiarati liberi</label>
+        <label class="check"><input type="checkbox" id="nonscaduti"> Nascondi aste con termine offerte scaduto</label>
+        <label class="check"><input type="checkbox" id="preciso"> Escludi posizioni stimate</label>
+        <input id="testo" type="search" placeholder="Cerca nel testo (es. box, giardino, Tribunale di Genova)">
+
+        <div class="row">
+          <button type="button" id="reset" class="btn">Azzera filtri</button>
+          <button type="button" id="apply" class="btn primary">Mostra risultati</button>
+        </div>
+        <p class="small muted" id="metainfo"></p>
+      </form>
+    </section>
+
+    <section id="v-preferiti" class="view">
+      <ul id="favlist" class="list"></ul>
+      <p id="favempty" class="muted pad">Nessuna asta salvata. Apri un'asta e tocca ☆ per salvarla.</p>
+    </section>
+  </main>
+
+  <nav class="tabs">
+    <button data-v="mappa" class="active"><span>🗺️</span>Mappa</button>
+    <button data-v="elenco"><span>📋</span>Elenco</button>
+    <button data-v="filtri"><span>⚙️</span>Filtri</button>
+    <button data-v="preferiti"><span>☆</span>Salvate</button>
+  </nav>
+
+  <div id="detail" class="sheet hidden" role="dialog" aria-modal="true">
+    <div class="sheet-head">
+      <button id="d-close" class="btn">‹ Indietro</button>
+      <button id="d-fav" class="btn">☆ Salva</button>
+    </div>
+    <div id="d-body" class="sheet-body"></div>
+  </div>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet.markercluster/1.5.3/leaflet.markercluster.min.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

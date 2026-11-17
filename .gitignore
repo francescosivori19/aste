@@ -1,0 +1,4 @@
+# dati generati ogni notte dal workflow, non versionati
+site/data/
+node_modules/
+.claude/settings.local.json

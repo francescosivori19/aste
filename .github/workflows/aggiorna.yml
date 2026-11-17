@@ -1,0 +1,61 @@
+name: Aggiorna aste e pubblica
+
+on:
+  schedule:
+    - cron: '30 3 * * *'   # ogni notte alle 03:30 UTC
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: ['site/**', 'scraper/**', '.github/workflows/**']
+
+permissions:
+  contents: write   # solo per il commit mensile che tiene attivo il workflow programmato
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  aggiorna:
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - id: pages
+        uses: actions/configure-pages@v5
+
+      - name: Scarica aste dal Portale delle Vendite Pubbliche
+        env:
+          PREV_URL: ${{ steps.pages.outputs.base_url }}/data
+        run: node scraper/scrape.mjs site/data
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+      - id: deploy
+        uses: actions/deploy-pages@v4
+
+      # GitHub sospende i workflow programmati dopo 60 giorni senza attività nel repository:
+      # il primo del mese registra un piccolo file per tenerlo attivo.
+      - name: Mantieni attivo il workflow
+        if: github.event_name == 'schedule'
+        run: |
+          if [ "$(date -u +%d)" = "01" ]; then
+            date -u +%Y-%m-%dT%H:%MZ > .ultimo-aggiornamento
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add .ultimo-aggiornamento
+            git commit -m "Aggiornamento mensile automatico" || true
+            git push || true
+          fi
