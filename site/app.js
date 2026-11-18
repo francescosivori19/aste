@@ -20,9 +20,15 @@ let ALL = [];            // index.json
 let RESULTS = [];        // filtrate
 let shown = 0;
 const detCache = new Map();
-const DEFAULT_F = { tipi: ['casa', 'magazzino', 'terreno'], zona: 'tutta', area: null, caps: '', pmin: '', pmax: '', dmin: '', dmax: '', libero: false, nonscaduti: true, preciso: false, testo: '', sort: 'data' };
+// Zone rapide: comuni costieri, in ordine da ovest a est
+const ZONE = {
+  'Levante: Bogliasco – Lerici': 'Bogliasco, Pieve Ligure, Sori, Recco, Camogli, Portofino, Santa Margherita Ligure, Rapallo, Zoagli, Chiavari, Lavagna, Sestri Levante, Moneglia, Deiva Marina, Framura, Bonassola, Levanto, Monterosso al Mare, Vernazza, Riomaggiore, Porto Venere, Portovenere, La Spezia, Lerici',
+};
+const ZONA_DEFAULT = ZONE['Levante: Bogliasco – Lerici'];
+const DEFAULT_F = { tipi: ['casa', 'magazzino', 'terreno'], zona: 'cap', area: null, caps: ZONA_DEFAULT, pmin: '', pmax: '', dmin: '', dmax: '', libero: false, nonscaduti: true, preciso: false, testo: '', sort: 'data' };
 let F = { ...DEFAULT_F, ...LS.get('filtri', {}) };
-let favs = new Set(LS.get('preferiti', []));
+if (!LS.get('zonaLevante', false)) { F.zona = 'cap'; F.caps = ZONA_DEFAULT; LS.set('zonaLevante', true); } // applica una volta la zona richiesta
+let favs = new Set(LS.get('preferiti', []).map(String));
 const lastVisit = LS.get('ultimaVisita', null);
 
 // ---------- utilità ----------
@@ -99,6 +105,7 @@ function readForm() {
   F.testo = $('#testo').value;
 }
 function writeForm() {
+  $('#zone-rapide').innerHTML = Object.keys(ZONE).map((k) => `<label data-zona="${esc(k)}">📍 ${esc(k)}</label>`).join('');
   $('#tipi').innerHTML = TIPI.map(([v, l]) => `<label><input type="checkbox" value="${v}" ${F.tipi.includes(v) ? 'checked' : ''}>${l}</label>`).join('');
   document.querySelector(`input[name=zona][value=${F.zona}]`).checked = true;
   $('#caps').value = F.caps; $('#pmin').value = F.pmin; $('#pmax').value = F.pmax;
@@ -119,6 +126,7 @@ function zonaUI() {
 function tagsHtml(a) {
   const t = [];
   if (lastVisit && a.pub && a.pub > lastVisit.slice(0, 10)) t.push('<span class="tag new">Nuova</span>');
+  if (a.src === 'notai') t.push('<span class="tag warn">Asta notarile</span>');
   for (const x of a.t) t.push(`<span class="tag">${esc(tipoLabel(x).replace(/^\S+\s/, ''))}</span>`);
   for (const d of a.disp || []) t.push(`<span class="tag ${d === 'Libero' ? 'ok' : d.startsWith('Occupato') ? 'bad' : 'warn'}">${esc(d)}</span>`);
   if (a.mod) t.push(`<span class="tag">${esc(a.mod)}</span>`);
@@ -128,7 +136,7 @@ function tagsHtml(a) {
 function cardHtml(a) {
   const g = giorniA(a.dv);
   return `<li class="card" data-id="${a.id}">
-    <div class="price">${eur(a.p)} <span class="muted small">min. ${eur(a.om)}${a.mq ? ` · ${a.mq} m² · ${eur(Math.round(a.p / a.mq))}/m²` : ''}</span></div>
+    <div class="price">${eur(a.p)} <span class="muted small">${a.om ? `min. ${eur(a.om)}` : ''}${a.mq ? ` · ${a.mq} m² · ${eur(Math.round(a.p / a.mq))}/m²` : ''}</span></div>
     <div class="meta">📅 ${fmtD(a.dv)}${g != null && g >= 0 ? ` (tra ${g} gg)` : ''}</div>
     <div class="meta">📍 ${esc(a.com || '')}${a.prov ? ` (${esc(a.prov)})` : ''}${a.cap ? ` · ${esc(a.cap)}` : ''}</div>
     <div class="desc">${esc(a.desc || '')}${(a.desc || '').length >= 110 ? '…' : ''}</div>
@@ -162,13 +170,18 @@ function renderMap() {
   for (const a of RESULTS) {
     if (!a.ll) continue;
     const m = L.circleMarker(a.ll, { radius: 7, weight: 2, color: '#fff', fillColor: COLORS[a.t[0]] || '#666', fillOpacity: a.approx ? 0.55 : 0.95 });
-    m.bindPopup(() => `<div class="popup-price">${eur(a.p)}</div><div>${esc(a.com || '')} · ${fmtD(a.dv, false)}</div><div class="small">${esc((a.desc || '').slice(0, 90))}…</div><button class="btn primary" style="margin-top:6px;width:100%" onclick="openDetail(${a.id})">Dettagli</button>`);
+    m.bindPopup(() => `<div class="popup-price">${eur(a.p)}</div><div>${esc(a.com || '')} · ${fmtD(a.dv, false)}</div><div class="small">${esc((a.desc || '').slice(0, 90))}…</div><button class="btn primary" style="margin-top:6px;width:100%" onclick="openDetail('${a.id}')">Dettagli</button>`);
     markers.push(m);
   }
   cluster.addLayers(markers);
   if (areaLayer) { areaLayer.remove(); areaLayer = null; }
   if (F.zona === 'area' && F.area) areaLayer = L.polygon(F.area, { color: '#1d4ed8', weight: 2, fillOpacity: 0.06, interactive: false }).addTo(map);
   zonaUI();
+}
+function fitResults() { // con la ricerca per CAP/comuni centra la mappa sui risultati
+  if (F.zona !== 'cap') return;
+  const pts = RESULTS.filter((a) => a.ll).map((a) => a.ll);
+  if (pts.length) map.fitBounds(L.latLngBounds(pts), { padding: [30, 30], maxZoom: 14 });
 }
 function startDraw() {
   showView('mappa');
@@ -201,7 +214,7 @@ function endDraw(save) {
 
 // ---------- dettaglio ----------
 async function loadDet(id) {
-  const s = id % SHARDS;
+  const s = String(id).startsWith('N-') ? 'notai' : Number(id) % SHARDS;
   if (!detCache.has(s)) detCache.set(s, fetch(`data/det/${s}.json`).then((r) => r.ok ? r.json() : {}).catch(() => ({})));
   return (await detCache.get(s))[id] || null;
 }
@@ -221,6 +234,9 @@ function analisi(a, d) { // riassunto e punti di attenzione, senza AI: regole su
   if (/rudere|da ristrutturare|fatiscent|inagibil|collabent/.test(testo)) flags.push(['warn', 'Immobile da ristrutturare o in cattive condizioni']);
   if (/servit/.test(testo)) flags.push(['warn', 'Presenza di servitù citata']);
   if (a.approx) flags.push(['warn', 'Posizione sulla mappa stimata dal comune: l\'indirizzo esatto è nella scheda']);
+  if (d?.diritto) flags.push(['warn', `Diritto in vendita: ${d.diritto} (non piena proprietà)`]);
+  if (d?.trattativaRiservata) flags.push(['warn', 'Trattativa riservata']);
+  if (a.src === 'notai') flags.push(['warn', 'Asta notarile: per partecipare serve rivolgersi a un notaio abilitato alla Rete Aste Notarili']);
   const to = d?.termineOfferte;
   const scaduto = to && parseDT(to) < new Date();
   const gTo = to && !scaduto ? giorniA(to) : null;
@@ -228,20 +244,24 @@ function analisi(a, d) { // riassunto e punti di attenzione, senza AI: regole su
   else if (gTo != null && gTo <= 7) flags.push(['warn', gTo <= 1 ? 'Il termine per le offerte scade entro 24 ore' : `Mancano ${gTo} giorni al termine per le offerte`]);
   const ribasso = a.p && a.om ? Math.round((1 - a.om / a.p) * 100) : null;
 
-  const tipo = [d?.tipoVendita && `vendita ${d.tipoVendita.toLowerCase()}`, d?.modalita && `in modalità ${d.modalita.toLowerCase()}`].filter(Boolean).join(' ') || 'Asta';
+  const lower = (s) => s.replace(/\b[A-Z][a-zà-ù]+\b/g, (w) => w.toLowerCase()); // lascia le sigle (es. RAN)
+  const tipo = [d?.tipoVendita && `vendita ${lower(d.tipoVendita)}`, d?.modalita && `in modalità ${lower(d.modalita)}`].filter(Boolean).join(' ') || 'Asta';
   const s = [];
   s.push(`${tipo.charAt(0).toUpperCase() + tipo.slice(1)} il ${fmtD(a.dv)}.`);
-  s.push(`Prezzo base ${eur(a.p)}, offerta minima ${eur(a.om)}${ribasso ? ` (−${ribasso}%)` : ''}, rilancio minimo ${eur(a.r)}.`);
+  s.push(a.om ? `Prezzo base ${eur(a.p)}, offerta minima ${eur(a.om)}${ribasso ? ` (−${ribasso}%)` : ''}${a.r ? `, rilancio minimo ${eur(a.r)}` : ''}.` : `Prezzo base ${eur(a.p)}.`);
   if (to) s.push(`Offerte entro ${fmtD(to)}${gTo != null && gTo >= 0 ? ` (tra ${gTo} giorni)` : ''}.`);
   const mq = a.mq || (d?.beni || []).reduce((t, b) => t + (typeof b.superficie === 'number' ? b.superficie : 0), 0);
-  if (mq) s.push(`Superficie dichiarata ${mq} m², circa ${eur(Math.round(a.p / mq))}/m² al prezzo base (${eur(Math.round(a.om / mq))}/m² all'offerta minima).`);
+  if (mq) s.push(`Superficie dichiarata ${mq} m², circa ${eur(Math.round(a.p / mq))}/m² al prezzo base${a.om ? ` (${eur(Math.round(a.om / mq))}/m² all'offerta minima)` : ''}.`);
   if (d?.rito) s.push(`Procedura: ${d.rito.toLowerCase()} n. ${d.numeroRg}/${d.annoRg}, Tribunale di ${trib(a)}.`);
+  if (d?.procedura) s.push(`Procedura: ${d.procedura}${d.notaio ? `, ${d.notaio}` : ''}.`);
   return { summary: s.join(' '), flags };
 }
 
-async function openDetail(id) {
-  const a = ALL.find((x) => x.id === id);
+async function openDetail(rawId) {
+  const a = ALL.find((x) => String(x.id) === String(rawId));
   if (!a) return;
+  const id = String(a.id);
+  const notarile = a.src === 'notai';
   $('#detail').classList.remove('hidden');
   $('#d-body').innerHTML = '<p class="muted">Caricamento…</p>';
   $('#d-fav').textContent = favs.has(id) ? '★ Salvata' : '☆ Salva';
@@ -251,13 +271,19 @@ async function openDetail(id) {
   const { summary, flags } = analisi(a, d);
   const ll = a.ll;
   const indirizzo = (d?.beni?.[0]?.indirizzo || a.via || '').replace(/,?\s*Italia\s*$/i, '');
-  const kv = [
+  const kv = notarile ? [
+    ['Prezzo', eur(a.p)], ['Data asta', fmtD(a.dv)], ['Termine offerte', d?.termineOfferte ? fmtD(d.termineOfferte) : '—'],
+    ['Tipo di vendita', d?.tipoVendita || '—'], ['Modalità', d?.modalita || a.mod || '—'],
+    ['Immobile', d?.tipologia || '—'], ['Superficie', a.mq ? `${a.mq} m²` : '—'], ['Diritto', d?.diritto || 'Proprietà'],
+    ['Procedura', d?.procedura || '—'], ['Notaio', d?.notaio || '—'], ['Luogo vendita', d?.luogoVendita || '—'],
+    ['Pubblicata il', fmtD(a.pub, false)], ['Avviso', id.replace(/^N-/, '')],
+  ] : [
     ['Prezzo base', eur(a.p)], ['Offerta minima', eur(a.om)], ['Rilancio minimo', eur(a.r)],
     ['Data asta', fmtD(a.dv)], ['Termine offerte', d?.termineOfferte ? fmtD(d.termineOfferte) : '—'],
     ['Tipo di vendita', d?.tipoVendita || '—'], ['Modalità', d?.modalita || a.mod || '—'],
     ['Luogo vendita', d?.luogoVendita || '—'], ['Deposito cauzionale', d?.deposito || '—'],
     ['Tribunale', trib(a) || '—'], ['Procedura', d?.rito ? `${d.rito} ${d.numeroRg}/${d.annoRg}` : (a.proc || '—')],
-    ['Lotto', d?.codLotto || a.lotto || '—'], ['Pubblicata il', fmtD(a.pub, false)], ['Inserzione PVP', String(a.id)],
+    ['Lotto', d?.codLotto || a.lotto || '—'], ['Pubblicata il', fmtD(a.pub, false)], ['Inserzione PVP', id],
   ];
   $('#d-body').innerHTML = `
     <h2>${eur(a.p)}</h2>
@@ -268,7 +294,9 @@ async function openDetail(id) {
       <ul class="flags">${flags.map(([c, t]) => `<li class="${c}">${esc(t)}</li>`).join('')}</ul>
     </div>
     <div class="links">
-      <a class="btn primary" href="${PVP(a.id)}" target="_blank" rel="noopener">Apri l'asta sul Portale Vendite Pubbliche</a>
+      ${notarile
+        ? `<a class="btn primary" href="${esc(d?.url || 'https://avvisinotarili.notariato.it/')}" target="_blank" rel="noopener">Apri l'avviso sul sito del Notariato</a>`
+        : `<a class="btn primary" href="${PVP(a.id)}" target="_blank" rel="noopener">Apri l'asta sul Portale Vendite Pubbliche</a>`}
       ${[...new Map((d?.siti || []).filter((s) => /^https?:/.test(s.url)).map((s) => [host(s.url), s])).values()].map((s) => `<a class="btn" href="${esc(s.url)}" target="_blank" rel="noopener">Vedi su ${esc(host(s.url))}</a>`).join('')}
       ${ll ? `<div class="row2"><a class="btn" href="https://maps.apple.com/?q=${ll[0]},${ll[1]}" target="_blank">Mappe Apple</a><a class="btn" href="https://www.google.com/maps/search/?api=1&query=${ll[0]},${ll[1]}" target="_blank">Google Maps</a></div>` : ''}
     </div>
@@ -287,7 +315,7 @@ window.openDetail = openDetail;
 function closeDetail() { $('#detail').classList.add('hidden'); }
 
 function renderFavs() {
-  const l = ALL.filter((a) => favs.has(a.id)).sort((a, b) => a.dv.localeCompare(b.dv));
+  const l = ALL.filter((a) => favs.has(String(a.id))).sort((a, b) => a.dv.localeCompare(b.dv));
   $('#favlist').innerHTML = l.map(cardHtml).join('');
   $('#favempty').classList.toggle('hidden', l.length > 0);
 }
@@ -304,9 +332,10 @@ async function main() {
   writeForm();
   initMap();
   document.querySelectorAll('.tabs button').forEach((b) => b.onclick = () => showView(b.dataset.v));
-  document.addEventListener('click', (e) => { const c = e.target.closest('.card'); if (c) openDetail(Number(c.dataset.id)); });
+  document.addEventListener('click', (e) => { const c = e.target.closest('.card'); if (c) openDetail(c.dataset.id); });
   document.querySelectorAll('input[name=zona]').forEach((r) => r.onchange = () => { readForm(); zonaUI(); });
-  $('#apply').onclick = () => { readForm(); applyFilters(); showView(F.zona === 'area' ? 'mappa' : 'elenco'); };
+  $('#apply').onclick = () => { readForm(); applyFilters(); fitResults(); showView(F.zona === 'area' ? 'mappa' : 'elenco'); };
+  $('#zone-rapide').onclick = (e) => { const z = e.target.closest('[data-zona]'); if (z) $('#caps').value = ZONE[z.dataset.zona]; };
   $('#reset').onclick = () => { F = { ...DEFAULT_F }; writeForm(); applyFilters(); };
   $('#go-draw').onclick = () => { readForm(); startDraw(); };
   $('#btn-draw').onclick = startDraw;
@@ -325,13 +354,14 @@ async function main() {
     ALL = idx;
     if (meta) {
       $('#updated').textContent = `agg. ${new Date(meta.aggiornato).toLocaleString('it-IT', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}`;
-      $('#metainfo').textContent = `Fonte: Portale delle Vendite Pubbliche (Ministero della Giustizia). ${meta.totale.toLocaleString('it-IT')} aste immobiliari future, aggiornate ogni notte. ${meta.posizioneStimata ? `${meta.posizioneStimata.toLocaleString('it-IT')} hanno la posizione stimata dal comune.` : ''}`;
+      $('#metainfo').textContent = `Fonti: Portale delle Vendite Pubbliche (Ministero della Giustizia)${meta.perFonte ? ` con ${meta.perFonte.pvp.toLocaleString('it-IT')} aste e Rete Aste Notarili con ${meta.perFonte.notai.toLocaleString('it-IT')}` : ''}. ${meta.totale.toLocaleString('it-IT')} aste immobiliari future, aggiornate ogni notte. ${meta.posizioneStimata ? `${meta.posizioneStimata.toLocaleString('it-IT')} hanno la posizione stimata dal comune.` : ''}`;
     }
   } catch (e) {
     $('#count').textContent = '· errore nel caricamento dati';
     console.error(e);
   }
   applyFilters();
+  fitResults();
   renderFavs();
   LS.set('ultimaVisita', new Date().toISOString());
 }

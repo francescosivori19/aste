@@ -1,6 +1,6 @@
 // Service worker: app installabile e utilizzabile offline con gli ultimi dati scaricati.
 // Codice dell'app: prima la cache. Dati: prima la rete, cache se offline.
-const VERSION = 'v1';
+const VERSION = 'v2';
 const SHELL = ['./', 'index.html', 'app.js', 'style.css', 'manifest.webmanifest', 'icons/icon-192.png'];
 
 self.addEventListener('install', (e) => {

@@ -201,6 +201,142 @@ function stimaPosizioni(index) {
   console.log(`posizioni stimate dal comune: ${n}`);
 }
 
+// ---------- aste notarili (avvisinotarili.notariato.it) ----------
+// Il sito lavora a sessione: si invia la ricerca "avvisi in corso" e poi, con lo stesso cookie,
+// si leggono le pagine dell'elenco (5 avvisi l'una, con coordinate quando presenti) e i riquadri
+// della mappa (dati più ricchi: tipologia, stato, notaio, ma solo per gli avvisi geolocalizzati).
+// Senza sessione l'interfaccia della mappa restituisce anche l'archivio storico: non usarla così.
+const NOT_BASE = 'https://avvisinotarili.notariato.it';
+const UA = { 'User-Agent': HEADERS['User-Agent'] };
+const itDT = (s) => { const m = s?.match(/(\d{2})\/(\d{2})\/(\d{4})\s+(\d{2}:\d{2})/); return m ? `${m[3]}-${m[2]}-${m[1]}T${m[4]}` : null; };
+const decode = (s) => (s || '').replace(/<[^>]+>/g, ' ').replace(/&amp;/g, '&').replace(/&#39;|&apos;/g, "'").replace(/&quot;/g, '"').replace(/&nbsp;/g, ' ').replace(/&#(\d+);/g, (_, n) => String.fromCharCode(n)).replace(/\s+/g, ' ').trim();
+
+async function notariliSessione() {
+  const body = new URLSearchParams({ tipoBene: 'I', statoAvviso: 'inCorso', ordinamento: 'prezzo:ASC' });
+  const r = await fetch(`${NOT_BASE}/beni-immobili/?`, { method: 'POST', body, headers: { ...UA, 'Content-Type': 'application/x-www-form-urlencoded' }, signal: AbortSignal.timeout(60000) });
+  const cookie = (r.headers.getSetCookie?.() || []).map((c) => c.split(';')[0]).join('; ');
+  const totale = Number((await r.text()).match(/(\d+)\s+Risultati Trovati/)?.[1] || 0);
+  if (!cookie || !totale) throw new Error('ricerca notarile senza risultati o senza sessione');
+  return { cookie, totale };
+}
+function parsePaginaNotarile(html) {
+  const out = [];
+  for (const part of html.split('<input class="avvisolat"').slice(1)) {
+    const link = part.match(/dettaglio-avviso\/(\w+)\/(\d+)/);
+    if (!link) continue;
+    const campo = (label) => decode(part.match(new RegExp(`${label}[^<]*<span>([^<]*)</span>`))?.[1]);
+    const luogo = decode(part.match(/<small class="pull-left[^>]*>([^<]*)<\/small>/)?.[1]);
+    const lm = luogo.match(/^(.*?),?\s*([^,()]+)\s*\(([^)]+)\)\s*$/);
+    out.push({
+      origin: link[1], idAvviso: link[2],
+      lat: part.match(/value="\s*(-?[\d.]+)"/)?.[1], lon: part.match(/class="avvisolon"[^>]*value="\s*(-?[\d.]+)"/)?.[1],
+      descrizione: decode(part.match(/<p>([\s\S]*?)<\/p>/)?.[1]),
+      prezzo: Number(campo("Prezzo dell'Avviso").replace(/[^\d,]/g, '').replace(',', '.')) || 0,
+      dataPubblicazione: itDT(campo('Data e Ora di pubblicazione')),
+      dataPresOfferteA: itDT(campo('Data e Ora fine raccolta offerte')),
+      dataVendita: itDT(campo('Data e Ora vendita')),
+      indirizzo: lm ? lm[1] : luogo, comune: lm ? lm[2] : null, provincia: lm ? lm[3] : null,
+      mq: Number(part.match(/<strong class="pull-right">\s*([\d.,]+)\s*mq/)?.[1]?.replace(/\./g, '').replace(',', '.')) || null,
+    });
+  }
+  return out;
+}
+async function notariliRaw() {
+  const { cookie, totale } = await notariliSessione();
+  const H = { ...UA, Cookie: cookie };
+  const raw = new Map();
+  const pagine = Math.ceil(totale / 5);
+  for (let p = 0; p < pagine; p++) {
+    try {
+      const r = await fetch(`${NOT_BASE}/beni-immobili/?&page=${p}`, { headers: H, signal: AbortSignal.timeout(30000) });
+      for (const x of parsePaginaNotarile(await r.text())) raw.set(`${x.origin}-${x.idAvviso}`, x);
+    } catch (e) { console.warn('notarili pagina', p, e.message); }
+    await sleep(100);
+  }
+  console.log(`notarili: ${raw.size} avvisi dall'elenco (attesi ${totale})`);
+  // dati ricchi dalla mappa, a riquadri di 1 grado (una zona troppo grande viene rifiutata)
+  let ricchi = 0;
+  for (let la = 36; la < 47.5; la++) for (let lo = 6; lo < 19; lo++) {
+    try {
+      const url = `${NOT_BASE}/avvisi/geolocation?nw_lat=${la}&nw_lon=${lo + 1}&ne_lat=${la + 1}&ne_lon=${lo + 1}&se_lat=${la + 1}&se_lon=${lo}&sw_lat=${la}&sw_lon=${lo}&total=${totale}`;
+      const j = await (await fetch(url, { headers: H, signal: AbortSignal.timeout(30000) })).json();
+      for (const x of j.value || []) {
+        const k = `${x.origin}-${x.idAvviso}`;
+        raw.set(k, { ...(raw.get(k) || {}), ...x, dataVendita: x.dataVendita?.slice(0, 16), dataPresOfferteA: x.dataPresOfferteA?.slice(0, 16), dataPubblicazione: x.dataPubblicazione?.slice(0, 16) });
+        ricchi++;
+      }
+    } catch (e) { console.warn('notarili riquadro', la, lo, e.message); }
+  }
+  console.log(`notarili: ${ricchi} con dati completi dalla mappa`);
+  return raw;
+}
+function tipoNotarile(x) {
+  const daTipo = tipoDaTesto(x.tipoImmobileDes);
+  return daTipo !== 'altro' ? daTipo : tipoDaTesto((x.descrizione || '').slice(0, 200));
+}
+function tipoDaTesto(t) {
+  const s = `${t || ''}`.toLowerCase();
+  if (/autorim|box|garage|posto auto|posti auto/.test(s)) return 'garage';
+  if (/terren|agricol|edificab|bosc|uliv|vign/.test(s)) return 'terreno';
+  if (/magazz|deposit|capann|laborat|industr|opific|artigian|cantin|soffitt/.test(s)) return 'magazzino';
+  if (/negoz|uffic|commerc|albergh|ristor|bar\b/.test(s)) return 'commerciale';
+  if (/abitaz|appart|villa|resid|casa|rustic|fabbricat/.test(s)) return 'casa';
+  return 'altro';
+}
+const titolo = (s) => (s || '').trim().toLowerCase().replace(/(^|[\s'-])\p{L}/gu, (m) => m.toUpperCase());
+const STATO_NOT = { LIB: 'Libero', OCC: 'Occupato', LOC: 'Occupato', OST: 'Occupato senza titolo' };
+const DIRITTO_NOT = { PRP: null, NUD: 'Nuda proprietà', USU: 'Usufrutto', SUP: 'Diritto di superficie', QUO: 'Quota' };
+async function notarili(pvpIds) {
+  const raw = await notariliRaw();
+  const now = new Date().toISOString().slice(0, 16);
+  const out = [];
+  let doppioni = 0;
+  for (const [key, x] of raw) {
+    // GAST = aste giudiziarie delegate ai notai: hanno lo stesso numero del PVP, già presenti
+    if (x.origin === 'GAST' && pvpIds.has(Number(x.idAvviso))) { doppioni++; continue; }
+    const dv = (x.dataVendita || '').slice(0, 16);
+    const to = (x.dataPresOfferteA || '').slice(0, 16) || null;
+    if (!dv || dv < now.slice(0, 10)) continue;
+    const lat = parseFloat(x.lat), lon = parseFloat(x.lon);
+    const disp = STATO_NOT[x.statoImmobile];
+    const diritto = x.diritto in DIRITTO_NOT ? DIRITTO_NOT[x.diritto] : x.diritto;
+    const id = `N-${key}`;
+    out.push({
+      idx: {
+        id, src: 'notai',
+        ll: lat > 35 && lat < 48 && lon > 6 && lon < 19 ? [Math.round(lat * 1e4) / 1e4, Math.round(lon * 1e4) / 1e4] : undefined,
+        t: [tipoNotarile(x)],
+        via: x.indirizzo || undefined,
+        com: titolo(x.comune) || undefined,
+        prov: x.provincia?.trim() || undefined,
+        p: x.prezzo || 0,
+        dv,
+        pub: (x.dataPubblicazione || '').slice(0, 10) || undefined,
+        disp: disp ? [disp] : undefined,
+        desc: (x.descrizione || '').replace(/\s+/g, ' ').trim().slice(0, 110),
+        mod: x.modalitaAcquistoDes || undefined,
+        to: to || undefined,
+        mq: x.mq || undefined,
+      },
+      det: {
+        tipoVendita: x.metodoAsta || null,
+        modalita: x.modalitaAcquistoDes || null,
+        termineOfferte: to,
+        luogoVendita: x.luogoVendita || null,
+        procedura: [x.tipoProceduraDes, x.richiedente && `richiedente: ${x.richiedente}`].filter(Boolean).join(' · ') || null,
+        notaio: x.notaioRiferimento ? `Notaio ${titolo(x.notaioRiferimento)}` : null,
+        diritto,
+        descrizione: x.descrizione || null,
+        tipologia: x.tipoImmobileDes || null,
+        url: `${NOT_BASE}/beni-immobili/dettaglio-avviso/${x.origin}/${x.idAvviso}`,
+        trattativaRiservata: !!x.trattativaRiservata,
+      },
+    });
+  }
+  console.log(`aste notarili future: ${out.length} (su ${raw.size} avvisi letti, ${doppioni} già presenti nel PVP)`);
+  return out;
+}
+
 const lista = await elenco();
 console.log(`aste future: ${lista.length}`);
 const cache = await caricaCachePrecedente();
@@ -208,13 +344,18 @@ const det = await dettagli(lista, cache);
 
 await fs.rm(OUT, { recursive: true, force: true });
 await fs.mkdir(path.join(OUT, 'det'), { recursive: true });
+let notai = [];
+try { notai = await notarili(new Set(lista.map((a) => a.id))); } catch (e) { console.warn('aste notarili non disponibili:', e.message); }
+
 const index = lista.map((a) => compatta(a, det.get(a.id)));
+index.push(...notai.map((n) => n.idx));
 stimaPosizioni(index);
 for (const x of index) for (const k of Object.keys(x)) if (x[k] == null || (Array.isArray(x[k]) && !x[k].length)) delete x[k];
 await fs.writeFile(path.join(OUT, 'index.json'), JSON.stringify(index));
 const shards = Array.from({ length: SHARDS }, () => ({}));
 for (const a of lista) if (det.has(a.id)) shards[a.id % SHARDS][a.id] = det.get(a.id);
 await Promise.all(shards.map((s, i) => fs.writeFile(path.join(OUT, 'det', `${i}.json`), JSON.stringify(s))));
+await fs.writeFile(path.join(OUT, 'det', 'notai.json'), JSON.stringify(Object.fromEntries(notai.map((n) => [n.idx.id, n.det]))));
 const meta = {
   aggiornato: new Date().toISOString(),
   totale: index.length,
@@ -222,7 +363,8 @@ const meta = {
   posizioneStimata: index.filter((x) => x.approx).length,
   conDettaglio: det.size,
   perTipo: Object.fromEntries(['casa', 'magazzino', 'terreno', 'commerciale', 'garage', 'altro'].map((t) => [t, index.filter((x) => x.t.includes(t)).length])),
-  fonti: ['pvp.giustizia.it'],
+  perFonte: { pvp: index.filter((x) => !x.src).length, notai: notai.length },
+  fonti: ['pvp.giustizia.it', 'avvisinotarili.notariato.it'],
 };
 await fs.writeFile(path.join(OUT, 'meta.json'), JSON.stringify(meta, null, 1));
 console.log(meta);
